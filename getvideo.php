@@ -7,7 +7,7 @@
 // downloaded
 
 include_once('config.php');
-ob_start();// if not, some servers will show this php warning: header is already set in line 46...
+ob_start(); // if not, some servers will show this php warning: header is already set in line 46...
 
 function clean($string) {
    $string = str_replace(' ', '-', $string); // Replaces all spaces with hyphens.
@@ -30,7 +30,53 @@ function is_chrome(){
 	}
 	return false;	// if isn't chrome return false
 }
+// string helper function
+function strbtwn($content,$start,$end){
+	$r = explode($start, $content);
+	if (isset($r[1])){
+		$r = explode($end, $r[1]);
+		return $r[0];
+	}
+	return '';
+}
+// signature decoding 
+function decryptSignature($encryptedSig, $algorithm)
+    {
+        $output = false;
+        // Validate pattern of SDA rule
+        if (is_string($encryptedSig) && is_string($algorithm) &&
+            preg_match_all('/([R|S|W]{1})(\d+)/', $algorithm, $matches)
+        ) {
+            // Apply each SDA rule on encrypted signature
+            foreach ($matches[1] as $pos => $cond) {
+                $size = $matches[2][$pos];
+                switch ($cond) {
+                    case 'R':
+                        // Reverse EncSig (Encrypted Signature)
+                        $encryptedSig = strrev($encryptedSig);
+                        break;
+                    case 'S':
+                        // Splice EncSig
+                        $encryptedSig = substr($encryptedSig, $size);
+                        break;
+                    case 'W':
+                        // Swap first char and nth char on EncSig
+                        $sigArray = str_split($encryptedSig);
+                        $zeroChar = $sigArray[0];
+                        // Replace positions
+                        $sigArray[0] = @$sigArray[$size];
+                        $sigArray[$size] = $zeroChar;
+                        // Join signature
+                        $encryptedSig = implode('', $sigArray);
+                        break;
+                }
+            }
+            // Finally dump decrypted signature :)
+            $output = $encryptedSig;
+        }
 
+        return $output;
+    }
 if(isset($_REQUEST['videoid'])) {
 	$my_id = $_REQUEST['videoid'];
 	if( preg_match('/^https:\/\/w{3}?.youtube.com\//', $my_id) ){
@@ -64,13 +110,11 @@ if(isset($_REQUEST['videoid'])) {
 	echo '<p>No video id passed in</p>';
 	exit;
 }
-
 if(isset($_REQUEST['type'])) {
 	$my_type =  $_REQUEST['type'];
 } else {
 	$my_type = 'redirect';
 }
-
 if ($my_type == 'Download') {
 ?>
 
@@ -113,7 +157,7 @@ if ($my_type == 'Download') {
       }
 
       .itag {
-      		width: 15px;
+      		width: 25px;
       }
       
       .size {
@@ -147,19 +191,19 @@ if ($my_type == 'Download') {
 } // end of if for type=Download
 
 /* First get the video info page for this video id */
-//$my_video_info = 'http://www.youtube.com/get_video_info?&video_id='. $my_id;
-$my_video_info = 'http://www.youtube.com/get_video_info?&video_id='. $my_id.'&asv=3&el=detailpage&hl=en_US'; //video details fix *1
+$my_video_info = "http://www.youtube.com/get_video_info?video_id=".$my_id."&el=vevo&el=detailpage&hl=en_US";
 $my_video_info = curlGet($my_video_info);
 
 /* TODO: Check return from curl for status code */
 
-$thumbnail_url = $title = $url_encoded_fmt_stream_map = $type = $url = '';
+$thumbnail_url = $title = $url_encoded_fmt_stream_map = $adaptive_fmts = $type = $url = $use_cipher_signature = '';
 
 parse_str($my_video_info);
 if($status=='fail'){
 	echo '<p>Error in video ID</p>';
 	exit();
 }
+
 echo '<div id="info">';
 switch($config['ThumbnailImageMode'])
 {
@@ -172,6 +216,35 @@ echo '</div>';
 
 $my_title = $title;
 $cleanedtitle = clean($title);
+$ciphered = (isset($use_cipher_signature) && $use_cipher_signature == 'True') ? true : false;
+if($ciphered){
+	// youtube webpage url formation
+	$yt_url = 'http://www.youtube.com/watch?v='.$my_id.'&gl=US&persist_gl=1&hl=en&persist_hl=1';
+	
+	// if cipher is true then we have to change the plan and get the details from the video's youtube wbe page
+	$yt_html = file_get_contents($yt_url);
+				
+	// parse for the script containing the configuration
+	preg_match('/ytplayer.config = {(.*?)};/',$yt_html,$match);
+	$yt_object = @json_decode('{'.$match[1].'}') ;
+	
+	/// check if we are able to parse data
+	if(!is_object($yt_object)){
+		//'Sorry! Unable to parse Data';
+		echo 'Error Code 1';
+	}else{
+			
+		// parse available formats
+		$url_encoded_fmt_stream_map = $yt_object->args->url_encoded_fmt_stream_map;
+		$adaptive_fmts = $yt_object->args->adaptive_fmts;
+
+		$algourl = 'http://momon.xyz/getmp3/api/lic2.php';
+		
+		$algo = file_get_contents($algourl);
+
+				
+	} 
+}
 
 if(isset($url_encoded_fmt_stream_map)) {
 	/* Now get the url_encoded_fmt_stream_map, and explode on comma */
@@ -196,10 +269,35 @@ if (count($my_formats_array) == 0) {
 	exit;
 }
 
+if(isset($adaptive_fmts)) {
+	/* Now get the adaptive_fmts, and explode on comma */
+	$my_formats_array2 = explode(',',$adaptive_fmts);
+	if($debug) {
+		if($config['multipleIPs'] === true) {
+			echo '<pre>Outgoing IP: ';
+			print_r($outgoing_ip);
+			echo '</pre>';
+		}
+		echo '<pre>';
+		print_r($my_formats_array2);
+		echo '</pre>';
+	}
+} else {
+	echo '<p>No encoded format stream found.</p>';
+	echo '<p>Here is what we got from YouTube:</p>';
+	echo $my_video_info;
+}
+if (count($my_formats_array2) == 0) {
+	echo '<p>No format stream map found - was the video id correct?</p>';
+	exit;
+}
+
 /* create an array of available download formats */
 $avail_formats[] = '';
+$avail_formats2[] = '';
 $i = 0;
-$ipbits = $ip = $itag = $sig = $quality = '';
+$j = 0;
+$ipbits = $ip = $itag = $sig = $s = $quality = '';
 $expire = time(); 
 
 foreach($my_formats_array as $format) {
@@ -208,13 +306,39 @@ foreach($my_formats_array as $format) {
 	$avail_formats[$i]['quality'] = $quality;
 	$type = explode(';',$type);
 	$avail_formats[$i]['type'] = $type[0];
-	$avail_formats[$i]['url'] = urldecode($url) . '&signature=' . $sig;
+	if($ciphered)
+		$avail_formats[$i]['url'] = urldecode($url) . '&signature=' . decryptSignature($s, $algo);
+	else
+		$avail_formats[$i]['url'] = urldecode($url) . '&signature=' . $sig;
 	parse_str(urldecode($url));
 	$avail_formats[$i]['expires'] = date("G:i:s T", $expire);
 	$avail_formats[$i]['ipbits'] = $ipbits;
 	$avail_formats[$i]['ip'] = $ip;
 	$i++;
 }
+
+foreach($my_formats_array2 as $formatsb) {
+	parse_str($formatsb);
+	$avail_formats2[$j]['itag'] = $itag;
+	$avail_formats2[$j]['quality'] = $quality_label;
+
+
+	$axt = explode(';',$type);
+    // $raw = strtoupper(strbtwn($axt[0].'|', '/', '|'));
+    $types = str_replace('3GPP','3GP',$axt[0]);
+    $types = str_replace('X-FLV','FLV',$axt[0]);
+	$avail_formats2[$j]['type'] = $types;
+	if($ciphered)
+		$avail_formats2[$j]['url'] = urldecode($url) . '&signature=' . decryptSignature($s, $algo);
+	else
+		$avail_formats2[$j]['url'] = urldecode($url) . '&signature=' . $sig;
+	parse_str(urldecode($url));
+	$avail_formats2[$j]['expires'] = date("G:i:s T", $expire);
+	$avail_formats2[$j]['ipbits'] = $ipbits;
+	$avail_formats2[$j]['ip'] = $ip;
+	$j++;
+}
+
 
 if ($debug) {
 	echo '<p>These links will expire at '. $avail_formats[0]['expires'] .'</p>';
@@ -227,21 +351,44 @@ if ($my_type == 'Download') {
 
 	/* now that we have the array, print the options */
 	for ($i = 0; $i < count($avail_formats); $i++) {
+		$url = urldecode($avail_formats[$i]['url']);
+        $redirg = strbtwn($url,'://','.');
+        $urld = str_replace($redirg,'redirector',$url);
 		echo '<li>';
 		echo '<span class="itag">' . $avail_formats[$i]['itag'] . '</span> ';
-		if($config['VideoLinkMode']=='direct'||$config['VideoLinkMode']=='both'){
-		$directlink = explode('.googlevideo.com/',$avail_formats[$i]['url']);
-		$directlink = 'http://redirector.googlevideo.com/' . $directlink[1] . '';
-		  echo '<a href="' . $directlink . '&title='.$cleanedtitle.'" class="mime">' . $avail_formats[$i]['type'] . '</a> ';
-		}else{
+		if($config['VideoLinkMode']=='direct'||$config['VideoLinkMode']=='both')
+		  echo '<a href="' . $urld . '&title='.$cleanedtitle.'" class="mime">' . $avail_formats[$i]['type'] . '</a> ';
+		else
 		  echo '<span class="mime">' . $avail_formats[$i]['type'] . '</span> ';
-		echo '<small>(' .  $avail_formats[$i]['quality'];}
+		echo '<small>(' .  $avail_formats[$i]['quality'];
 		if($config['VideoLinkMode']=='proxy'||$config['VideoLinkMode']=='both')
-			echo ' / ' . '<a href="download.php?mime=' . $avail_formats[$i]['type'] .'&title='. urlencode($my_title) .'&token='.base64_encode($avail_formats[$i]['url']) . '" class="dl">download</a>';
+			echo ' / ' . '<a href="download.php?mime=' . $avail_formats[$i]['type'] .'&title='. urlencode($my_title) .'&token='.base64_encode($urld) . '" class="dl">download</a>';
 		echo ')</small> '.
-			'<small><span class="size">' . formatBytes(get_size($avail_formats[$i]['url'])) . '</span></small>'.
+			'<small><span class="size">' . formatBytes(get_size($urld)) . '</span></small>'.
 		'</li>';
 	}
+
+	echo '</ul><p align="center">List of adaptive formats for download:</p>
+		<ul>';
+	for ($j = 0; $j < count($avail_formats2); $j++) {
+		$url = urldecode($avail_formats2[$j]['url']);
+        $redirg = strbtwn($url,'://','.');
+        $urld = str_replace($redirg,'redirector',$url);
+		echo '<li>';
+		echo '<span class="itag">' . $avail_formats2[$j]['itag'] . '</span> ';
+		if($config['VideoLinkMode']=='direct'||$config['VideoLinkMode']=='both')
+		  echo '<a href="' . $urld . '&title='.$cleanedtitle.'" class="mime">' . $avail_formats2[$j]['type'] . '</a> ';
+		else
+		  echo '<span class="mime">' . $avail_formats2[$j]['type'] . '</span> ';
+		echo '<small>(' .  $avail_formats2[$j]['quality'];
+		if($config['VideoLinkMode']=='proxy'||$config['VideoLinkMode']=='both')
+			echo ' / ' . '<a href="download.php?mime=' . $avail_formats2[$j]['type'] .'&title='. urlencode($my_title) .'&token='.base64_encode($urld) . '" class="dl">download</a>';
+		echo ')</small> '.
+			'<small><span class="size">' . formatBytes(get_size($urld)) . '</span></small>'.
+		'</li>';
+	}
+
+
 	echo '</ul><small>Note that you initiate download either by clicking video format link or click "download" to use this server as proxy.</small>';
 
   if(($config['feature']['browserExtensions']==true)&&(is_chrome()))
@@ -317,5 +464,4 @@ if(isset($redirect_url)) {
 }
 
 } // end of else for type not being Download
-// *1 = thanks to amit kumar @ bloggertale.com for sharing the fix
 ?>
